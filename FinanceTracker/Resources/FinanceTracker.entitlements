@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        The app has no network usage. On iOS you cannot literally block sockets
+        via entitlements the way macOS App Sandbox does, but this file is here
+        as a placeholder for future capabilities and is intentionally minimal.
+        There is no NSAppTransportSecurity block because no HTTP is performed.
+    -->
+</dict>
+</plist>

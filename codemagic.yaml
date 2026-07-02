@@ -1,0 +1,182 @@
+# codemagic.yaml — Finance Tracker (offline iOS app)
+#
+# Active workflow:
+#   * ios-simulator-build — unsigned build + tests on iOS Simulator.
+#     Requires NO Apple Developer account, NO certificates, NO App Store
+#     Connect API keys. Good for verifying the code compiles on every push.
+#
+# When you're ready to ship to TestFlight later, generate an App Store
+# Connect API key (Users and Access → Integrations → App Store Connect API
+# in App Store Connect), add it to a Codemagic environment group named
+# `app_store_credentials`, then uncomment the `ios-testflight` workflow at
+# the bottom of this file.
+#
+# Prerequisite: this repo must contain an Xcode project or workspace.
+# The Swift sources ship without one, so either:
+#   * open Xcode once, create the FinanceTracker app target, drag the sources
+#     in, and commit `FinanceTracker.xcodeproj`, OR
+#   * add an XcodeGen `project.yml` and let the workflow generate the project
+#     (uncomment the `xcodegen generate` script step below).
+
+definitions:
+  env_versions: &env_versions
+    xcode: latest        # or pin to a specific one Codemagic lists, e.g. 16.2
+    cocoapods: default
+  cache_paths: &cache_paths
+    - $HOME/Library/Caches/CocoaPods
+    - $HOME/Library/Developer/Xcode/DerivedData
+    - $HOME/Library/Caches/org.swift.swiftpm
+
+workflows:
+
+  ios-simulator-build:
+    name: iOS Simulator Build & Test
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    environment:
+      <<: *env_versions
+      vars:
+        XCODE_PROJECT: "FinanceTracker.xcodeproj"
+        XCODE_SCHEME: "FinanceTracker"
+        SIMULATOR_DEVICE: "iPhone 15 Pro"
+        SIMULATOR_OS: "latest"
+    cache:
+      cache_paths: *cache_paths
+    triggering:
+      events:
+        - push
+        - pull_request
+      branch_patterns:
+        - pattern: "*"
+          include: true
+          source: true
+    scripts:
+      - name: Show Xcode & Swift versions
+        script: |
+          xcodebuild -version
+          swift --version
+
+      # Uncomment if you use XcodeGen to generate the project from project.yml:
+      - name: Generate Xcode project with XcodeGen
+        script: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen generate
+
+      - name: Resolve Swift Package dependencies
+        script: |
+          if [ -d "$XCODE_PROJECT" ]; then
+            xcodebuild -resolvePackageDependencies -project "$XCODE_PROJECT" -scheme "$XCODE_SCHEME" || true
+          fi
+
+      - name: Build for iOS Simulator (unsigned)
+        script: |
+          set -o pipefail
+          # Pick the newest installed iOS simulator runtime so this doesn't
+          # break when Codemagic updates the base image.
+          SIM_OS=$(xcrun simctl list runtimes | awk -F'[()]' '/iOS/ {print $2}' | tail -1)
+          echo "Using simulator runtime: iOS $SIM_OS"
+          xcodebuild \
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME" \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,name=$SIMULATOR_DEVICE,OS=$SIM_OS" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build | xcpretty
+
+      - name: Run unit tests (if any test target exists)
+        script: |
+          set -o pipefail
+          SIM_OS=$(xcrun simctl list runtimes | awk -F'[()]' '/iOS/ {print $2}' | tail -1)
+          if xcodebuild -list -project "$XCODE_PROJECT" | grep -q "Tests"; then
+            xcodebuild test \
+              -project "$XCODE_PROJECT" \
+              -scheme "$XCODE_SCHEME" \
+              -destination "platform=iOS Simulator,name=$SIMULATOR_DEVICE,OS=$SIM_OS" \
+              CODE_SIGNING_ALLOWED=NO | xcpretty
+          else
+            echo "No test target detected — skipping tests."
+          fi
+    artifacts:
+      - build/**/*.app
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.log
+    publishing:
+      email:
+        recipients:
+          - your.email@example.com
+        notify:
+          success: false
+          failure: true
+
+# ---------------------------------------------------------------------------
+# TestFlight workflow (disabled — enable later when you have API credentials)
+# ---------------------------------------------------------------------------
+# To enable:
+#   1. In App Store Connect: Users and Access → Integrations → App Store
+#      Connect API → generate a key. Save the .p8 file, key ID, and issuer ID.
+#   2. In Codemagic: App settings → Environment variables → add a group
+#      named `app_store_credentials` with three variables:
+#         APP_STORE_CONNECT_ISSUER_ID
+#         APP_STORE_CONNECT_KEY_IDENTIFIER
+#         APP_STORE_CONNECT_PRIVATE_KEY   (paste .p8 contents, mark Secure)
+#   3. Replace `com.example.financetracker` with your bundle identifier.
+#   4. Replace the `APP_STORE_APPLE_ID` value with your app's numeric Apple ID.
+#   5. Un-indent the block below by removing the leading `# ` on each line.
+#
+#  ios-testflight:
+#    name: iOS TestFlight Release
+#    max_build_duration: 60
+#    instance_type: mac_mini_m2
+#    environment:
+#      <<: *env_versions
+#      groups:
+#        - app_store_credentials
+#      ios_signing:
+#        distribution_type: app_store
+#        bundle_identifier: com.example.financetracker
+#      vars:
+#        XCODE_PROJECT: "FinanceTracker.xcodeproj"
+#        XCODE_SCHEME: "FinanceTracker"
+#        APP_STORE_APPLE_ID: 0000000000
+#    cache:
+#      cache_paths: *cache_paths
+#    triggering:
+#      events:
+#        - tag
+#      tag_patterns:
+#        - pattern: "v*"
+#          include: true
+#    scripts:
+#      - name: Set up code signing (App Store Connect API)
+#        script: |
+#          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+#            --type IOS_APP_STORE \
+#            --create
+#          keychain add-certificates
+#          xcode-project use-profiles
+#      - name: Bump build number
+#        script: |
+#          LATEST_BUILD=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APPLE_ID" || echo "0")
+#          NEW_BUILD=$(($LATEST_BUILD + 1))
+#          cd $CM_BUILD_DIR
+#          agvtool new-version -all "$NEW_BUILD"
+#      - name: Archive and export IPA
+#        script: |
+#          set -o pipefail
+#          xcode-project build-ipa \
+#            --project "$XCODE_PROJECT" \
+#            --scheme "$XCODE_SCHEME" \
+#            --config Release
+#    artifacts:
+#      - build/ios/ipa/*.ipa
+#      - /tmp/xcodebuild_logs/*.log
+#      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.dSYM.zip
+#    publishing:
+#      app_store_connect:
+#        auth: integration
+#        submit_to_testflight: true
+#        beta_groups:
+#          - Internal Testers
