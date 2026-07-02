@@ -38,8 +38,6 @@ workflows:
       vars:
         XCODE_PROJECT: "FinanceTracker.xcodeproj"
         XCODE_SCHEME: "FinanceTracker"
-        SIMULATOR_DEVICE: "iPhone 15 Pro"
-        SIMULATOR_OS: "latest"
     cache:
       cache_paths: *cache_paths
     triggering:
@@ -153,16 +151,12 @@ workflows:
       - name: Build for iOS Simulator (unsigned)
         script: |
           set -o pipefail
-          # Pick the newest installed iOS simulator runtime so this doesn't
-          # break when Codemagic updates the base image.
-          SIM_OS=$(xcrun simctl list runtimes | awk -F'[()]' '/iOS/ {print $2}' | tail -1)
-          echo "Using simulator runtime: iOS $SIM_OS"
           xcodebuild \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME" \
             -sdk iphonesimulator \
             -configuration Debug \
-            -destination "platform=iOS Simulator,name=$SIMULATOR_DEVICE,OS=$SIM_OS" \
+            -destination "generic/platform=iOS Simulator" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             build | xcpretty
@@ -170,16 +164,27 @@ workflows:
       - name: Run unit tests (if any test target exists)
         script: |
           set -o pipefail
-          SIM_OS=$(xcrun simctl list runtimes | awk -F'[()]' '/iOS/ {print $2}' | tail -1)
-          if xcodebuild -list -project "$XCODE_PROJECT" | grep -q "Tests"; then
-            xcodebuild test \
-              -project "$XCODE_PROJECT" \
-              -scheme "$XCODE_SCHEME" \
-              -destination "platform=iOS Simulator,name=$SIMULATOR_DEVICE,OS=$SIM_OS" \
-              CODE_SIGNING_ALLOWED=NO | xcpretty
-          else
+          if ! xcodebuild -list -project "$XCODE_PROJECT" | grep -q "Tests"; then
             echo "No test target detected — skipping tests."
+            exit 0
           fi
+
+          # Pick the first available iPhone simulator on this image.
+          SIM_LINE=$(xcrun simctl list devices available \
+                     | grep -E "iPhone [0-9]+" \
+                     | head -1)
+          if [ -z "$SIM_LINE" ]; then
+            echo "No iPhone simulator available — skipping tests."
+            exit 0
+          fi
+          SIM_UDID=$(echo "$SIM_LINE" | grep -oE "[A-F0-9-]{36}" | head -1)
+          echo "Testing on simulator: $SIM_LINE"
+
+          xcodebuild test \
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME" \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            CODE_SIGNING_ALLOWED=NO | xcpretty
     artifacts:
       - build/**/*.app
       - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.log
