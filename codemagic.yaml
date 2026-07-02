@@ -86,7 +86,7 @@ workflows:
           INFO_REL=$(python3 -c "import os,sys;print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$INFO_PLIST" "$REPO_ROOT")
           echo "Info.plist: $INFO_REL"
 
-          ENT_PLIST=$(find . -type f -name "FinanceTracker.entitlements" | head -1)
+          ENT_PLIST=""   # sideloading tools inject their own; skip our entitlements
           if [ -n "$ENT_PLIST" ]; then
             ENT_REL=$(python3 -c "import os,sys;print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$ENT_PLIST" "$REPO_ROOT")
             ENT_LINE="        CODE_SIGN_ENTITLEMENTS: $ENT_REL"
@@ -148,18 +148,46 @@ workflows:
             xcodebuild -resolvePackageDependencies -project "$XCODE_PROJECT" -scheme "$XCODE_SCHEME" || true
           fi
 
-      - name: Build for iOS Simulator (unsigned)
+      - name: Build unsigned .ipa for iPhone (sideload with Sideloadly / AltStore)
         script: |
           set -o pipefail
+          BUILD_DIR="$CM_BUILD_DIR/build"
+          mkdir -p "$BUILD_DIR"
+
+          # 1. Build for the physical-device SDK with code signing fully off.
           xcodebuild \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME" \
-            -sdk iphonesimulator \
-            -configuration Debug \
-            -destination "generic/platform=iOS Simulator" \
+            -sdk iphoneos \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            CONFIGURATION_BUILD_DIR="$BUILD_DIR" \
+            CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_ENTITLEMENTS="" \
+            EXPANDED_CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
             build | xcpretty
+
+          # 2. Locate the built .app.
+          APP_PATH=$(find "$BUILD_DIR" -maxdepth 2 -type d -name "*.app" | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: no .app produced under $BUILD_DIR"
+            find "$BUILD_DIR" -maxdepth 3
+            exit 1
+          fi
+          echo "Built app: $APP_PATH"
+
+          # 3. Wrap in the standard Payload/ folder and zip as .ipa.
+          PACK_DIR="$CM_BUILD_DIR/ipa_pack"
+          rm -rf "$PACK_DIR"
+          mkdir -p "$PACK_DIR/Payload"
+          cp -R "$APP_PATH" "$PACK_DIR/Payload/"
+          (cd "$PACK_DIR" && zip -qr "$CM_BUILD_DIR/FinanceTracker-unsigned.ipa" Payload)
+
+          ls -lh "$CM_BUILD_DIR/FinanceTracker-unsigned.ipa"
+          echo "Download this .ipa, then sign+install with Sideloadly or AltStore."
 
       - name: Run unit tests (if any test target exists)
         script: |
@@ -186,6 +214,7 @@ workflows:
             -destination "platform=iOS Simulator,id=$SIM_UDID" \
             CODE_SIGNING_ALLOWED=NO | xcpretty
     artifacts:
+      - FinanceTracker-unsigned.ipa
       - build/**/*.app
       - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.log
     publishing:
