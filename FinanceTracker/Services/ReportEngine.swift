@@ -82,10 +82,10 @@ enum ReportEngine {
 
         out += "By Category\n-----------\n"
         for c in cats {
-            out += String(format: "%-20@ %10@ (%d)\n" as NSString,
-                          c.category as NSString,
-                          Money.string(c.total) as NSString,
-                          c.count) as String
+            let name = c.category.padding(toLength: 20, withPad: " ", startingAt: 0)
+            let amount = Money.string(c.total)
+            let pad = String(repeating: " ", count: max(1, 12 - amount.count))
+            out += "\(name)\(pad)\(amount)  (\(c.count))\n"
         }
 
         out += "\nBy Month\n--------\n"

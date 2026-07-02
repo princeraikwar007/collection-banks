@@ -38,8 +38,6 @@ workflows:
       vars:
         XCODE_PROJECT: "FinanceTracker.xcodeproj"
         XCODE_SCHEME: "FinanceTracker"
-        SIMULATOR_DEVICE: "iPhone 15 Pro"
-        SIMULATOR_OS: "latest"
     cache:
       cache_paths: *cache_paths
     triggering:
@@ -59,10 +57,90 @@ workflows:
       # Uncomment if you use XcodeGen to generate the project from project.yml:
       - name: Generate Xcode project with XcodeGen
         script: |
+          set -e
+
+          echo "=== Repo layout (top level) ==="
+          ls -la
+
+          echo "=== All Swift files ==="
+          find . -type f -name "*.swift" | sort
+
+          echo "=== Locating FinanceTrackerApp.swift ==="
+          APP_SWIFT=$(find . -type f -name "FinanceTrackerApp.swift" | head -1)
+          if [ -z "$APP_SWIFT" ]; then
+            echo "ERROR: FinanceTrackerApp.swift not found anywhere in the checkout."
+            echo "Make sure the Swift sources are actually committed to the repo."
+            exit 1
+          fi
+          SRC_DIR=$(cd "$(dirname "$APP_SWIFT")" && pwd)
+          REPO_ROOT=$(pwd)
+          REL=$(python3 -c "import os,sys;print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$SRC_DIR" "$REPO_ROOT")
+          echo "Sources rooted at: $REL"
+
+          echo "=== Locating Info.plist ==="
+          INFO_PLIST=$(find . -type f -name "Info.plist" | head -1)
+          if [ -z "$INFO_PLIST" ]; then
+            echo "ERROR: Info.plist not found in checkout."
+            exit 1
+          fi
+          INFO_REL=$(python3 -c "import os,sys;print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$INFO_PLIST" "$REPO_ROOT")
+          echo "Info.plist: $INFO_REL"
+
+          ENT_PLIST=$(find . -type f -name "FinanceTracker.entitlements" | head -1)
+          if [ -n "$ENT_PLIST" ]; then
+            ENT_REL=$(python3 -c "import os,sys;print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$ENT_PLIST" "$REPO_ROOT")
+            ENT_LINE="        CODE_SIGN_ENTITLEMENTS: $ENT_REL"
+          else
+            ENT_LINE=""
+          fi
+
+          echo "=== Writing dynamic project.yml ==="
+          cat > project.yml <<EOF
+          name: FinanceTracker
+          options:
+            bundleIdPrefix: com.example
+            deploymentTarget:
+              iOS: "17.0"
+            createIntermediateGroups: true
+          settings:
+            base:
+              SWIFT_VERSION: "5.9"
+              DEVELOPMENT_TEAM: ""
+              CODE_SIGN_STYLE: Automatic
+              ENABLE_USER_SCRIPT_SANDBOXING: NO
+          targets:
+            FinanceTracker:
+              type: application
+              platform: iOS
+              deploymentTarget: "17.0"
+              sources:
+                - path: $REL
+                  excludes:
+                    - "**/Info.plist"
+                    - "**/*.entitlements"
+              settings:
+                base:
+                  PRODUCT_BUNDLE_IDENTIFIER: com.example.financetracker
+                  PRODUCT_NAME: FinanceTracker
+                  INFOPLIST_FILE: $INFO_REL
+          $ENT_LINE
+                  GENERATE_INFOPLIST_FILE: NO
+                  TARGETED_DEVICE_FAMILY: "1,2"
+                  SUPPORTS_MACCATALYST: NO
+          EOF
+
+          cat project.yml
+
+          echo "=== Installing XcodeGen ==="
           if ! command -v xcodegen >/dev/null 2>&1; then
             brew install xcodegen
           fi
+
+          echo "=== Generating Xcode project ==="
           xcodegen generate
+
+          echo "=== Result ==="
+          ls -la FinanceTracker.xcodeproj
 
       - name: Resolve Swift Package dependencies
         script: |
@@ -73,16 +151,12 @@ workflows:
       - name: Build for iOS Simulator (unsigned)
         script: |
           set -o pipefail
-          # Pick the newest installed iOS simulator runtime so this doesn't
-          # break when Codemagic updates the base image.
-          SIM_OS=$(xcrun simctl list runtimes | awk -F'[()]' '/iOS/ {print $2}' | tail -1)
-          echo "Using simulator runtime: iOS $SIM_OS"
           xcodebuild \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME" \
             -sdk iphonesimulator \
             -configuration Debug \
-            -destination "platform=iOS Simulator,name=$SIMULATOR_DEVICE,OS=$SIM_OS" \
+            -destination "generic/platform=iOS Simulator" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             build | xcpretty
@@ -90,16 +164,27 @@ workflows:
       - name: Run unit tests (if any test target exists)
         script: |
           set -o pipefail
-          SIM_OS=$(xcrun simctl list runtimes | awk -F'[()]' '/iOS/ {print $2}' | tail -1)
-          if xcodebuild -list -project "$XCODE_PROJECT" | grep -q "Tests"; then
-            xcodebuild test \
-              -project "$XCODE_PROJECT" \
-              -scheme "$XCODE_SCHEME" \
-              -destination "platform=iOS Simulator,name=$SIMULATOR_DEVICE,OS=$SIM_OS" \
-              CODE_SIGNING_ALLOWED=NO | xcpretty
-          else
+          if ! xcodebuild -list -project "$XCODE_PROJECT" | grep -q "Tests"; then
             echo "No test target detected — skipping tests."
+            exit 0
           fi
+
+          # Pick the first available iPhone simulator on this image.
+          SIM_LINE=$(xcrun simctl list devices available \
+                     | grep -E "iPhone [0-9]+" \
+                     | head -1)
+          if [ -z "$SIM_LINE" ]; then
+            echo "No iPhone simulator available — skipping tests."
+            exit 0
+          fi
+          SIM_UDID=$(echo "$SIM_LINE" | grep -oE "[A-F0-9-]{36}" | head -1)
+          echo "Testing on simulator: $SIM_LINE"
+
+          xcodebuild test \
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME" \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            CODE_SIGNING_ALLOWED=NO | xcpretty
     artifacts:
       - build/**/*.app
       - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.log

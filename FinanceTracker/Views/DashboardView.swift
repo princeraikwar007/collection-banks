@@ -28,7 +28,7 @@ struct DashboardView: View {
             Text("Remaining Balance").font(.caption).foregroundStyle(.secondary)
             Text(Money.string(totals.balance))
                 .font(.system(size: 40, weight: .bold, design: .rounded))
-                .foregroundStyle(totals.balance >= 0 ? .primary : .red)
+                .foregroundStyle(totals.balance >= 0 ? Color.primary : Color.red)
             Text("\(totals.count) transactions").font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
